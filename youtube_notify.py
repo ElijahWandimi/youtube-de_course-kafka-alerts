@@ -2,6 +2,10 @@
 
 import sys
 import logging
+from confluent_kafka import SerializingProducer
+from confluent_kafka.schema_registry import SchemaRegistryClient
+from confluent_kafka.schema_registry.avro import AvroSerializer
+from confluent_kafka.serialization import StringSerializer
 import requests
 import json
 from pprint import pformat
@@ -70,8 +74,24 @@ def summarise_video(video):
     }
 
 
+def on_delivery(error, record):
+    pass
+
+
 def main():
     logging.info("START")
+
+    schema_registry_client = SchemaRegistryClient(config['schema_registry'])
+    kahan_de_value_schema = schema_registry_client.get_latest_version('youtube_kahan_de_course-value')
+
+    kafka_config = config['kafka'] | {
+        "key.serializer": StringSerializer(),
+        "value.serializer": AvroSerializer(
+            schema_registry_client,
+            kahan_de_value_schema.schema.schema_str,
+            ),
+    }
+    producer = SerializingProducer(kafka_config)
 
     google_api_key = config['google_api_key']
     playlist_id = config['youtube_playlist_id']
@@ -80,6 +100,20 @@ def main():
         video_id = video_item['contentDetails']['videoId']
         for video in fetch_videos(google_api_key, video_id):
             logging.info(f"Got {pformat(summarise_video(video))}")
+
+            producer.produce(
+                topic = 'youtube_kahan_de_course',
+                key = video_id,
+                value = {
+                    "TITLE": video['snippet']['title'],
+                    "VIEWS": int(video['statistics'].get('viewCount', 0)),
+                    "LIKES": int(video['statistics'].get('likeCount', 0)),
+                    "COMMENTS": int(video['statistics'].get('commentCount'), 0)
+                },
+                on_delivery = on_delivery
+            )
+
+    producer.flush()
 
 
 if __name__ == "__main__":
